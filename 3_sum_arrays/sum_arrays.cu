@@ -1,67 +1,132 @@
 #include <cuda_runtime.h>
 #include <stdio.h>
-#include "freshman.h"
+#include <iostream>
 
+/***
+ *  Looks like gpu programming is interesting, lol, need to tune performance
+ */
 
-void sumArrays(float * a,float * b,float * res,const int size)
-{
-  for(int i=0;i<size;i+=4)
-  {
-    res[i]=a[i]+b[i];
-    res[i+1]=a[i+1]+b[i+1];
-    res[i+2]=a[i+2]+b[i+2];
-    res[i+3]=a[i+3]+b[i+3];
+#define CHECK(call)\
+{\
+  const cudaError_t error=call;\
+  if(error != cudaError_t::cudaSuccess)\
+  {\
+      printf("ERROR: %s:%d,",__FILE__,__LINE__);\
+      printf("code:%d,reason:%s\n", error, cudaGetErrorString(error));\
+      exit(1);\
+  }\
+}
+
+// a + b -> c
+void sum_array(float* a, float* b, float* c, size_t len) {
+  for (int i = 0;i < len;i ++) {
+    c[i] = a[i] + b[i];
+  }  
+}
+
+__global__ void sum_array_gpu(float* a, float* b, float* c, size_t len) {
+  size_t global_block_index = blockIdx.x * gridDim.x + blockIdx.y;
+  size_t global_thread_index = threadIdx.x * blockDim.x + threadIdx.y;
+  size_t global_index = global_block_index + global_thread_index;
+  if (global_index < len) {
+    c[global_index] = a[global_index] + b[global_index];
   }
 }
-__global__ void sumArraysGPU(float*a,float*b,float*res)
-{
-  //int i=threadIdx.x;
-  int i=blockIdx.x*blockDim.x+threadIdx.x;
-  res[i]=a[i]+b[i];
+
+void fill_array(float* array, int len) {
+  for (size_t i = 0;i < len;i ++) {
+    array[i] = (rand() % 10000) * 1.0 / 7;
+  }
 }
+
+void print_array(float* array, int len) {
+  for (size_t i = 0;i < len;i ++) {
+    std::cout << array[i] << " ";
+  }
+  std::cout << std::endl;
+}
+
 int main(int argc,char **argv)
 {
-  int dev = 0;
-  cudaSetDevice(dev);
+  size_t len = 1000;
+  size_t bytes_len = sizeof(float) * len;
+  float* a_h = (float*) malloc(bytes_len);
+  float* b_h = (float*) malloc(bytes_len);
+  float* c_h = (float*) malloc(bytes_len);
+  float* c_d_to_h = (float*) malloc(bytes_len);
 
-  int nElem=1<<14;
-  printf("Vector size:%d\n",nElem);
-  int nByte=sizeof(float)*nElem;
-  float *a_h=(float*)malloc(nByte);
-  float *b_h=(float*)malloc(nByte);
-  float *res_h=(float*)malloc(nByte);
-  float *res_from_gpu_h=(float*)malloc(nByte);
-  memset(res_h,0,nByte);
-  memset(res_from_gpu_h,0,nByte);
+  // prepare test data
+  fill_array(a_h, len);
+  fill_array(b_h, len);
 
-  float *a_d,*b_d,*res_d;
-  CHECK(cudaMalloc((float**)&a_d,nByte));
-  CHECK(cudaMalloc((float**)&b_d,nByte));
-  CHECK(cudaMalloc((float**)&res_d,nByte));
+  // cpu version
+  clock_t cpu_start_time, cpu_end_time;
+  cpu_start_time = clock();
+  sum_array(a_h, b_h, c_h, len);
+  cpu_end_time = clock();
+  float cpu_time = (static_cast<float>(cpu_end_time - cpu_start_time) / static_cast<float>(CLOCKS_PER_SEC));
+  std::cout << "cpu time is: " << cpu_time * 1000 << "ms" << std::endl;
 
-  initialData(a_h,nElem);
-  initialData(b_h,nElem);
+  // setup cuda
+  size_t default_device = 0;
+  cudaSetDevice(default_device);
 
-  CHECK(cudaMemcpy(a_d,a_h,nByte,cudaMemcpyHostToDevice));
-  CHECK(cudaMemcpy(b_d,b_h,nByte,cudaMemcpyHostToDevice));
+  // gpu version
+  float* a_d, *b_d, *c_d;
+  CHECK(cudaMalloc((float**) &a_d, bytes_len));
+  CHECK(cudaMalloc((float**) &b_d, bytes_len));
+  CHECK(cudaMalloc((float**) &c_d, bytes_len));
 
-  dim3 block(1024);
-  dim3 grid(nElem/block.x);
-  sumArraysGPU<<<grid,block>>>(a_d,b_d,res_d);
-  printf("Execution configuration<<<%d,%d>>>\n",grid.x,block.x);
+  // copy a, b to device for computation
+  cudaMemcpy(a_d, a_h, bytes_len, cudaMemcpyKind::cudaMemcpyHostToDevice);
+  cudaMemcpy(b_d, b_h, bytes_len, cudaMemcpyKind::cudaMemcpyHostToDevice);
+  
+  // gpu version
+  float gpu_time;
+  cudaEvent_t start, stop;
+  CHECK(cudaEventCreate(&start));
+  CHECK(cudaEventCreate(&stop));
+  CHECK(cudaEventRecord(start, 0));
 
-  CHECK(cudaMemcpy(res_from_gpu_h,res_d,nByte,cudaMemcpyDeviceToHost));
-  sumArrays(a_h,b_h,res_h,nElem);
+  size_t block_dim_value = 16;
+  dim3 block_dim(block_dim_value , block_dim_value);
+  size_t grid_dim_value = (len + block_dim_value - 1) / block_dim_value;
+  dim3 grid_dim(grid_dim_value, grid_dim_value);
+  sum_array_gpu<<<grid_dim, block_dim>>>(a_d, b_d, c_d, len);
 
-  checkResult(res_h,res_from_gpu_h,nElem);
+  CHECK(cudaEventRecord(stop, 0));
+  CHECK(cudaEventSynchronize(stop));
+  CHECK(cudaEventElapsedTime(&gpu_time, start, stop));
+  CHECK(cudaEventDestroy(start));
+  CHECK(cudaEventDestroy(stop));
+
+  std::cout << "gpu time is: " << gpu_time << "ms" << std::endl;
+  
+  // copy gpu result to cpu
+  // length is bytes' length!
+  CHECK(cudaMemcpy(c_d_to_h, c_d, bytes_len, cudaMemcpyKind::cudaMemcpyDeviceToHost));
+
+  // compare result
+  for (size_t i = 0;i < len;i ++) {
+    float diff = abs(c_d_to_h[i] - c_h[i]);
+    if (diff > 1e-3) {
+      std::cout << diff << std::endl;
+    }
+  }
+
+  // shutdown cuda
+  cudaDeviceReset();
+
+  // free gpu devices
   cudaFree(a_d);
   cudaFree(b_d);
-  cudaFree(res_d);
+  cudaFree(c_d);
 
+  // free cpu pointers
   free(a_h);
   free(b_h);
-  free(res_h);
-  free(res_from_gpu_h);
+  free(c_h);
+  free(c_d_to_h);
 
   return 0;
 }
