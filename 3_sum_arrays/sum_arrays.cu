@@ -48,6 +48,8 @@ void print_array(float* array, int len) {
 
 int main(int argc,char **argv)
 {
+  // TODO(研究清楚为什么len会导致计算有些为空)
+  // TODO(尝试搞通nvprof的使用)
   size_t len = 1000;
   size_t bytes_len = sizeof(float) * len;
   float* a_h = (float*) malloc(bytes_len);
