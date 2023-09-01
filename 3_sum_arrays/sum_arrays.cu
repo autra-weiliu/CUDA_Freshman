@@ -113,8 +113,8 @@ int main(int argc,char **argv)
     }
   }
 
-  // shutdown cuda
-  cudaDeviceReset();
+  // sync cuda computation
+  CHECK(cudaDeviceSynchronize());
 
   // free gpu devices
   cudaFree(a_d);
@@ -126,6 +126,9 @@ int main(int argc,char **argv)
   free(b_h);
   free(c_h);
   free(c_d_to_h);
+
+  // shutdown cuda
+  CHECK(cudaDeviceReset());
 
   return 0;
 }
