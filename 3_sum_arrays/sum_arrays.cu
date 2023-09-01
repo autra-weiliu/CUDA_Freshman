@@ -25,11 +25,9 @@ void sum_array(float* a, float* b, float* c, size_t len) {
 }
 
 __global__ void sum_array_gpu(float* a, float* b, float* c, size_t len) {
-  size_t global_block_index = blockIdx.x * gridDim.x + blockIdx.y;
-  size_t global_thread_index = threadIdx.x * blockDim.x + threadIdx.y;
-  size_t global_index = global_block_index + global_thread_index;
-  if (global_index < len) {
-    c[global_index] = a[global_index] + b[global_index];
+  size_t index = blockDim.x * blockIdx.x + threadIdx.x;
+  if (index < len) {
+    c[index] = a[index] + b[index];
   }
 }
 
@@ -48,9 +46,8 @@ void print_array(float* array, int len) {
 
 int main(int argc,char **argv)
 {
-  // TODO(研究清楚为什么len会导致计算有些为空)
   // TODO(尝试搞通nvprof的使用)
-  size_t len = 1000;
+  size_t len = 10000000;
   size_t bytes_len = sizeof(float) * len;
   float* a_h = (float*) malloc(bytes_len);
   float* b_h = (float*) malloc(bytes_len);
@@ -90,10 +87,10 @@ int main(int argc,char **argv)
   CHECK(cudaEventCreate(&stop));
   CHECK(cudaEventRecord(start, 0));
 
-  size_t block_dim_value = 16;
-  dim3 block_dim(block_dim_value , block_dim_value);
+  size_t block_dim_value = 64;
+  dim3 block_dim(block_dim_value);
   size_t grid_dim_value = (len + block_dim_value - 1) / block_dim_value;
-  dim3 grid_dim(grid_dim_value, grid_dim_value);
+  dim3 grid_dim(grid_dim_value);
   sum_array_gpu<<<grid_dim, block_dim>>>(a_d, b_d, c_d, len);
 
   CHECK(cudaEventRecord(stop, 0));
