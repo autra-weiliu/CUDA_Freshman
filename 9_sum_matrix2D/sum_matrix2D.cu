@@ -1,91 +1,119 @@
 #include <cuda_runtime.h>
 #include <stdio.h>
-#include "freshman.h"
-void sumMatrix2D_CPU(float * MatA,float * MatB,float * MatC,int nx,int ny)
-{
-  float * a=MatA;
-  float * b=MatB;
-  float * c=MatC;
-  for(int j=0;j<ny;j++)
-  {
-    for(int i=0;i<nx;i++)
-    {
-      c[i]=a[i]+b[i];
+#include <iostream>
+
+void sum_matrix_cpu(float* matrix_1, float* matrix_2, float* matrix_res, const int n, const int m) {
+    for (size_t i = 0;i < n;i ++) {
+        for (size_t j = 0;j < m;j ++) {
+            size_t index = i * m + j;
+            matrix_res[index] += (matrix_1[index] + matrix_2[index]);
+        }
     }
-    c+=nx;
-    b+=nx;
-    a+=nx;
-  }
 }
-__global__ void sumMatrix(float * MatA,float * MatB,float * MatC,int nx,int ny)
-{
-    int ix=threadIdx.x+blockDim.x*blockIdx.x;
-    int iy=threadIdx.y+blockDim.y*blockIdx.y;
-    int idx=ix+iy*ny;
-    if (ix<nx && iy<ny)
-    {
-      MatC[idx]=MatA[idx]+MatB[idx];
+
+__global__ void sum_matrix_gpu(float* matrix_1, float* matrix_2, float* matrix_res, const int n, const int m) {
+    size_t x = blockDim.x * blockIdx.x + threadIdx.x;
+    size_t y = blockDim.y * blockIdx.y + threadIdx.y;
+    if (x < n && y < m) {
+        size_t index = x + y * m;
+        matrix_res[index] += (matrix_1[index] + matrix_2[index]);
+    }
+}
+
+void fill_data(float* matrix, const int n, const int m) {
+    for (size_t i = 0;i < n;i ++) {
+        for (size_t j = 0;j < m;j ++) {
+            size_t index = i * m + j;
+            matrix[index] = (rand() * 10000) * 1.0 / 13;
+        }
     }
 }
 
 int main(int argc,char** argv)
 {
-  printf("strating...\n");
-  initDevice(0);
-  int nx=1<<12;
-  int ny=1<<12;
-  int nxy=nx*ny;
-  int nBytes=nxy*sizeof(float);
+    // matrix data
+    const int n = 2048 , m = 2048;
+    const int bytes_len = sizeof(float) * n * m;
 
-  //Malloc
-  float* A_host=(float*)malloc(nBytes);
-  float* B_host=(float*)malloc(nBytes);
-  float* C_host=(float*)malloc(nBytes);
-  float* C_from_gpu=(float*)malloc(nBytes);
-  initialData(A_host,nxy);
-  initialData(B_host,nxy);
+    // cpu data
+    float* matrix_1_h;
+    float* matrix_2_h;
+    float* matrix_res_h;
+    float* matrix_res_d_to_h;
 
-  //cudaMalloc
-  float *A_dev=NULL;
-  float *B_dev=NULL;
-  float *C_dev=NULL;
-  CHECK(cudaMalloc((void**)&A_dev,nBytes));
-  CHECK(cudaMalloc((void**)&B_dev,nBytes));
-  CHECK(cudaMalloc((void**)&C_dev,nBytes));
+    matrix_1_h = (float*) malloc(bytes_len);
+    matrix_2_h = (float*) malloc(bytes_len);
+    matrix_res_h = (float*) malloc(bytes_len);
+    matrix_res_d_to_h = (float*) malloc(bytes_len);
 
+    // gpu data
+    float* matrix_1_d;
+    float* matrix_2_d;
+    float* matrix_res_d;
 
-  CHECK(cudaMemcpy(A_dev,A_host,nBytes,cudaMemcpyHostToDevice));
-  CHECK(cudaMemcpy(B_dev,B_host,nBytes,cudaMemcpyHostToDevice));
+    cudaMalloc((float**) &matrix_1_d, bytes_len);
+    cudaMalloc((float**) &matrix_2_d, bytes_len);
+    cudaMalloc((float**) &matrix_res_d, bytes_len);
 
-  int dimx=32;
-  int dimy=32;
+    size_t default_device = 0;
+    cudaSetDevice(default_device);
 
-  // cpu compute
-  cudaMemcpy(C_from_gpu,C_dev,nBytes,cudaMemcpyDeviceToHost);
-  double iStart=cpuSecond();
-  sumMatrix2D_CPU(A_host,B_host,C_host,nx,ny);
-  double iElaps=cpuSecond()-iStart;
-  printf("CPU Execution Time elapsed %f sec\n",iElaps);
+    // fill data
+    fill_data(matrix_1_h, n, m);
+    fill_data(matrix_2_h, n, m);
 
-  // 2d block and 2d grid
-  dim3 block_0(dimx,dimy);
-  dim3 grid_0((nx-1)/block_0.x+1,(ny-1)/block_0.y+1);
-  iStart=cpuSecond();
-  sumMatrix<<<grid_0,block_0>>>(A_dev,B_dev,C_dev,nx,ny);
-  CHECK(cudaDeviceSynchronize());
-  iElaps=cpuSecond()-iStart;
-  printf("GPU Execution configuration<<<(%d,%d),(%d,%d)>>> Time elapsed %f sec\n",
-        grid_0.x,grid_0.y,block_0.x,block_0.y,iElaps);
-  CHECK(cudaMemcpy(C_from_gpu,C_dev,nBytes,cudaMemcpyDeviceToHost));
-  checkResult(C_host,C_from_gpu,nxy);
-  
-  cudaFree(A_dev);
-  cudaFree(B_dev);
-  cudaFree(C_dev);
-  free(A_host);
-  free(B_host);
-  free(C_host);
-  free(C_from_gpu);
-  cudaDeviceReset();
-  return 0;
+    // cpu computation
+    sum_matrix_cpu(matrix_1_h , matrix_2_h, matrix_res_h, n , m);
+
+    // gpu computation
+    cudaMemcpy((float**) matrix_1_d, matrix_1_h, bytes_len, cudaMemcpyKind::cudaMemcpyHostToDevice);
+    cudaMemcpy((float**) matrix_2_d, matrix_2_h, bytes_len, cudaMemcpyKind::cudaMemcpyHostToDevice);
+    cudaMemcpy((float**) matrix_res_d, matrix_res_h, bytes_len, cudaMemcpyKind::cudaMemcpyHostToDevice);
+
+    // tune block dim for testing performance
+    dim3 block_dim(64, 64);
+    dim3 grid_dim((n + block_dim.x - 1) / block_dim.x, (m + block_dim.y - 1) / block_dim.y);
+
+    cudaEvent_t start_time, end_time;
+    cudaEventCreate(&start_time);
+    cudaEventCreate(&end_time);
+    cudaEventRecord(start_time, 0);
+
+    sum_matrix_gpu<<<grid_dim, block_dim>>>(matrix_1_d, matrix_2_d, matrix_res_d, n , m);
+    cudaMemcpy((float**) matrix_res_d_to_h, matrix_res_d, bytes_len, cudaMemcpyKind::cudaMemcpyDeviceToHost);
+
+    cudaEventRecord(end_time, 0);
+    cudaEventSynchronize(end_time);
+    float gpu_time;
+    cudaEventElapsedTime(&gpu_time, start_time, end_time);
+    cudaEventDestroy(start_time);
+    cudaEventDestroy(end_time);
+    std::cout << "gpu time: " << gpu_time << "ms" << std::endl;
+
+    // compare cpu and gpu result
+    for (size_t i = 0;i < n;i ++) {
+        for (size_t j = 0;j < m;j ++) {
+            size_t index = i * m + j;
+            if (matrix_res_h[index] != matrix_res_d_to_h[index]) {
+                std::cerr << "error found" << std::endl;
+                exit(EXIT_FAILURE);
+            }
+        }
+    }
+    std::cout << "succeeded" << std::endl;
+
+    // free data
+    free(matrix_1_h);
+    free(matrix_2_h);
+    free(matrix_res_h);
+    free(matrix_res_d_to_h);
+
+    cudaFree(matrix_1_d);
+    cudaFree(matrix_2_d);
+    cudaFree(matrix_res_d);
+
+    // shutdown
+    cudaDeviceReset();
+
+    return EXIT_SUCCESS;
 }
